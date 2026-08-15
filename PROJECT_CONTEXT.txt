@@ -1,0 +1,2350 @@
+﻿========================
+PROJECT_STATE.md
+========================
+
+# Phishing Detector --- Project State
+
+**Snapshot date:** 2026-08-13\
+**Purpose:** Handoff of the entire known project state from the ChatGPT
+conversation to another AI (e.g.Â Google Gemini).
+
+------------------------------------------------------------------------
+
+## 1. Project overview
+
+This project is a **phishing URL detector** written in Python.
+
+The current approach is:
+
+1.  Take a URL.
+2.  Extract handcrafted lexical/structural URL features.
+3.  Store those features in a processed CSV dataset.
+4.  Train a `RandomForestClassifier`.
+5.  Save the trained model as a `.pkl` file with `joblib`.
+6.  Evaluate it against external legitimate and phishing URL lists.
+7.  Inspect missed examples and add/improve features when useful.
+
+The project is being developed locally on Windows in:
+
+``` text
+C:\Users\adriy\OneDrive\Documents\phishing-detector
+```
+
+The user runs it inside a Python virtual environment:
+
+``` text
+(venv) PS C:\Users\adriy\OneDrive\Documents\phishing-detector>
+```
+
+------------------------------------------------------------------------
+
+## 2. Current known project structure
+
+The following paths/files are known from the conversation:
+
+``` text
+phishing-detector/
+â”œâ”€â”€ data/
+â”‚   â””â”€â”€ processed_features.csv
+â”œâ”€â”€ model/
+â”‚   â”œâ”€â”€ phishing_model.pkl
+â”‚   â””â”€â”€ confusion_matrix.png
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ feature_extractor.py
+â”‚   â”œâ”€â”€ evaluate_benign.py
+â”‚   â””â”€â”€ evaluate_phishing.py
+â””â”€â”€ venv/
+```
+
+There may be additional files that were not shown in the conversation.
+Do not assume the tree above is exhaustive.
+
+------------------------------------------------------------------------
+
+## 3. Current dataset state
+
+The user ran:
+
+``` powershell
+python -c "import pandas as pd; df=pd.read_csv('data/processed_features.csv'); print('Columns:'); print(df.columns.tolist()); print('\nShape:', df.shape); print('\nLabel counts:'); print(df['label'].value_counts())"
+```
+
+Result:
+
+``` text
+Columns:
+['url_length', 'hostname_length', 'path_length', 'query_length',
+ 'num_dots', 'num_hyphens', 'num_slashes', 'num_digits',
+ 'num_letters', 'num_special_chars', 'uses_https', 'has_ip_address',
+ 'has_at_symbol', 'has_double_slash', 'domain_length',
+ 'subdomain_length', 'num_subdomains', 'has_subdomain',
+ 'has_valid_tld', 'suspicious_word_count',
+ 'suspicious_path_pattern_count', 'suspicious_path_word_count',
+ 'has_long_numeric_sequence', 'has_hex_like_sequence',
+ 'has_double_extension', 'digit_ratio', 'letter_ratio', 'url_entropy',
+ 'label']
+
+Shape: (95949, 29)
+
+Label counts:
+label
+0    48046
+1    47903
+```
+
+Therefore:
+
+-   Rows: **95,949**
+-   Columns: **29**
+-   Features: **28**
+-   Label: **1**
+-   Labels are nearly balanced:
+    -   Legitimate (`0`): 48,046
+    -   Phishing (`1`): 47,903
+
+The important new feature added during debugging is:
+
+``` text
+suspicious_path_word_count
+```
+
+------------------------------------------------------------------------
+
+## 4. Current feature extractor
+
+The user provided the current `src/feature_extractor.py`.
+
+Imports:
+
+``` python
+import re
+import math
+import ipaddress
+import tldextract
+from urllib.parse import urlparse
+```
+
+Global suspicious words:
+
+``` python
+SUSPICIOUS_WORDS = [
+    "login",
+    "signin",
+    "verify",
+    "verification",
+    "secure",
+    "account",
+    "update",
+    "confirm",
+    "password",
+    "credential",
+    "paypal",
+    "bank",
+    "billing",
+    "payment",
+    "wallet",
+    "auth",
+]
+```
+
+Suspicious path patterns:
+
+``` python
+SUSPICIOUS_PATH_PATTERNS = [
+    "/wp-content/",
+    "/wp-includes/",
+    "/plugins/",
+    "/themes/",
+    "/cgi-bin/",
+    "/upload/",
+    "/uploads/",
+]
+```
+
+Suspicious path words:
+
+``` python
+SUSPICIOUS_PATH_WORDS = [
+    "login",
+    "signin",
+    "sign-in",
+    "verify",
+    "verification",
+    "virefication",
+    "secure",
+    "account",
+    "update",
+    "confirm",
+    "password",
+    "credential",
+    "billing",
+    "payment",
+    "paypal",
+    "bank",
+]
+```
+
+The extractor contains these helper functions:
+
+-   `has_ip_address(url)`
+-   `count_special_characters(url)`
+-   `count_digits(url)`
+-   `count_letters(url)`
+-   `calculate_entropy(text)`
+-   `has_long_numeric_sequence(url)`
+-   `has_hex_like_sequence(url)`
+-   `has_double_extension(url)`
+-   `count_suspicious_path_words(path, query)`
+-   `suspicious_path_pattern_count(path)`
+-   `extract_features(url)`
+
+### Current `count_suspicious_path_words`
+
+The function currently supplied by the user is:
+
+``` python
+def count_suspicious_path_words(path, query):
+    text = (path + "?" + query).lower()
+
+    suspicious_words = [
+        "login",
+        "signin",
+        "verify",
+        "verification",
+        "account",
+        "update",
+        "secure",
+        "security",
+        "confirm",
+        "password",
+        "credential",
+        "authenticate",
+        "payment",
+        "wallet",
+        "bank",
+        "webscr",
+        "signin",
+        "validate",
+    ]
+
+    return sum(text.count(word) for word in suspicious_words)
+```
+
+Note: this local list is different from `SUSPICIOUS_PATH_WORDS`. It also
+contains a duplicate `"signin"` entry. This has not yet been cleaned up.
+
+### Current `suspicious_path_pattern_count`
+
+The user currently has:
+
+``` python
+def suspicious_path_pattern_count(path):
+    path_lower = path.lower()
+
+    suspicious_path_word_count = sum(
+        1 for word in SUSPICIOUS_PATH_WORDS
+        if word in path_lower
+    )
+
+    count = 0
+
+    for pattern in SUSPICIOUS_PATH_PATTERNS:
+        if pattern in path_lower:
+            count += 1
+
+    return count
+```
+
+Important: the `suspicious_path_word_count` local variable inside this
+function is currently calculated but **not returned or used**. The
+actual path-word feature in `extract_features()` comes from
+`count_suspicious_path_words(path, query)`.
+
+This distinction should be preserved when debugging rather than assuming
+the local variable changes the returned feature.
+
+### Current feature dictionary construction
+
+The user's code DOES have a feature dictionary:
+
+``` python
+features = {}
+```
+
+It then populates the dictionary.
+
+The relevant lines are:
+
+``` python
+features["suspicious_word_count"] = suspicious_word_count
+
+features["suspicious_path_pattern_count"] = suspicious_path_pattern_count(path)
+
+features["suspicious_path_word_count"] = count_suspicious_path_words(path, query)
+```
+
+So the current implementation already outputs
+`suspicious_path_word_count`.
+
+------------------------------------------------------------------------
+
+## 5. Current feature list
+
+The current 28 feature columns are:
+
+``` text
+url_length
+hostname_length
+path_length
+query_length
+num_dots
+num_hyphens
+num_slashes
+num_digits
+num_letters
+num_special_chars
+uses_https
+has_ip_address
+has_at_symbol
+has_double_slash
+domain_length
+subdomain_length
+num_subdomains
+has_subdomain
+has_valid_tld
+suspicious_word_count
+suspicious_path_pattern_count
+suspicious_path_word_count
+has_long_numeric_sequence
+has_hex_like_sequence
+has_double_extension
+digit_ratio
+letter_ratio
+url_entropy
+```
+
+`label` is the target and is not an input feature.
+
+------------------------------------------------------------------------
+
+## 6. Debugging history: the missed phishing URL
+
+A key debugging target was:
+
+``` text
+www.mega-strana.com/tmp/ro/set/Paypal_Virefication/
+```
+
+Initially the feature extraction showed:
+
+``` text
+suspicious_word_count: 0
+suspicious_path_pattern_count: 0
+suspicious_path_word_count: 0
+```
+
+The reason was that the path contained:
+
+``` text
+Paypal_Virefication
+```
+
+and the misspelled phishing keyword is:
+
+``` text
+Virefication
+```
+
+The `SUSPICIOUS_PATH_WORDS` list was subsequently shown to contain:
+
+``` text
+"virefication"
+```
+
+The evaluation later showed that this phishing URL was no longer missed
+and was classified as:
+
+``` text
+PHISHING 96.0% phishing
+```
+
+This was a successful improvement.
+
+------------------------------------------------------------------------
+
+## 7. Current second missed phishing URL
+
+The latest phishing evaluation has exactly one missed URL:
+
+``` text
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+```
+
+Latest result:
+
+``` text
+MISSED 38.5% phishing
+```
+
+The user extracted its features:
+
+``` text
+url_length: 54
+hostname_length: 24
+path_length: 23
+query_length: 0
+num_dots: 2
+num_hyphens: 0
+num_slashes: 4
+num_digits: 0
+num_letters: 47
+num_special_chars: 0
+uses_https: 0
+has_ip_address: 0
+has_at_symbol: 0
+has_double_slash: 0
+domain_length: 21
+subdomain_length: 0
+num_subdomains: 0
+has_subdomain: 0
+has_valid_tld: 1
+suspicious_word_count: 0
+suspicious_path_pattern_count: 0
+suspicious_path_word_count: 0
+has_long_numeric_sequence: 0
+has_hex_like_sequence: 0
+has_double_extension: 0
+digit_ratio: 0.0
+letter_ratio: 0.8703703703703703
+url_entropy: 4.092876280647646
+```
+
+This URL currently does not trigger the handcrafted suspicious-word/path
+features.
+
+Potentially relevant observations for future work:
+
+-   `cadastro` is a login/registration-related Portuguese word, but
+    adding it blindly as a suspicious keyword could create false
+    positives.
+-   `vocesorte` and `journalnoticesgoiases.nl` are not inherently
+    suspicious according to the current feature set.
+-   The model gives this URL only 38.5% phishing probability.
+-   Do NOT immediately hardcode this one URL or its exact domain as
+    phishing. Prefer a generalizable feature or multilingual/semantic
+    approach if adding a feature.
+
+------------------------------------------------------------------------
+
+## 8. External legitimate/benign evaluation
+
+The user ran:
+
+``` powershell
+python src/evaluate_benign.py
+```
+
+The test contained **37 legitimate external URLs**.
+
+Latest reported summary:
+
+``` text
+Correct:  37/37
+Accuracy: 100.0%
+```
+
+Examples of legitimate URLs and predicted phishing probabilities
+included:
+
+``` text
+https://www.google.com                         0.0%
+https://www.google.com/search                  0.5%
+https://www.google.com/search?q=cybersecurity 34.0%
+https://mail.google.com                       1.5%
+https://docs.google.com                       3.0%
+https://drive.google.com                     12.0%
+https://www.amazon.com                         0.5%
+https://www.amazon.com/s?k=laptop              3.5%
+https://www.apple.com                           5.5%
+https://www.apple.com/iphone                    2.6%
+https://www.microsoft.com                      4.5%
+https://support.microsoft.com                 15.0%
+https://www.wikipedia.org                      5.0%
+https://en.wikipedia.org/wiki/Cybersecurity   18.5%
+https://github.com                             36.5%
+https://github.com/explore                     26.6%
+https://github.com/search?q=python             31.2%
+https://youtube.com                            48.0%
+https://www.youtube.com/results?search_query=python 2.0%
+https://www.reddit.com                           1.0%
+https://www.linkedin.com                       15.0%
+https://www.linkedin.com/jobs                   2.2%
+https://www.netflix.com                         2.5%
+https://www.adobe.com                            2.5%
+https://www.cloudflare.com                    11.0%
+https://www.mozilla.org                         3.0%
+https://www.python.org                          1.0%
+https://www.python.org/downloads                0.0%
+https://www.nasa.gov                            9.0%
+https://www.ibm.com                              8.5%
+https://www.intel.com                            4.0%
+https://www.samsung.com                          2.0%
+https://www.tesla.com                            5.5%
+https://www.paypal.com                            0.0%
+https://www.paypal.com/signin                   13.5%
+```
+
+Important caveat: **100% accuracy on 37 benign URLs does not prove
+real-world benign accuracy**. Several legitimate URLs have moderately
+high probabilities, especially GitHub and YouTube:
+
+-   GitHub: 36.5%
+-   GitHub Explore: 26.6%
+-   GitHub search: 31.2%
+-   YouTube root: 48.0%
+
+This should be investigated before claiming the detector is robust.
+
+------------------------------------------------------------------------
+
+## 9. External phishing evaluation
+
+The user ran:
+
+``` powershell
+python src/evaluate_phishing.py
+```
+
+Latest summary:
+
+``` text
+Correctly detected: 99/100
+Missed:             1/100
+Detection rate:     99.0%
+```
+
+The latest missed URL is:
+
+``` text
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+```
+
+with:
+
+``` text
+38.5% phishing
+```
+
+A previously missed URL:
+
+``` text
+www.mega-strana.com/tmp/ro/set/Paypal_Virefication/
+```
+
+was improved to:
+
+``` text
+96.0% phishing
+```
+
+The external phishing set includes many obviously malicious URLs with
+very high scores, often 95--100%.
+
+There are also lower-confidence detections such as:
+
+``` text
+www.rallycc.cl/steam/              64.0%
+www.7518642n.org/ilhot/Sign In.htm 61.0%
+www.farma-gen.com/dosyalar/logon.php 73.0%
+www.thegatheringatthecross.com/Robert/webs.htm 81.5%
+home.comcast.net/~Jmckenna1/index2.html 73.5%
+```
+
+These lower-confidence examples are useful for improving the model.
+
+------------------------------------------------------------------------
+
+## 10. Current training script
+
+The user provided the training code.
+
+Known configuration:
+
+``` python
+INPUT_FILE = "data/processed_features.csv"
+MODEL_FILE = "model/phishing_model.pkl"
+```
+
+It loads the processed CSV:
+
+``` python
+df = pd.read_csv(INPUT_FILE)
+```
+
+Separates:
+
+``` python
+X = df.drop(columns=["label"])
+y = df["label"]
+```
+
+Uses:
+
+``` python
+train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+```
+
+Random Forest:
+
+``` python
+RandomForestClassifier(
+    n_estimators=200,
+    random_state=42,
+    n_jobs=-1
+)
+```
+
+It evaluates:
+
+-   accuracy
+-   precision
+-   recall
+-   F1
+-   classification report
+-   confusion matrix
+
+It saves:
+
+``` text
+model/confusion_matrix.png
+```
+
+and:
+
+``` text
+model/phishing_model.pkl
+```
+
+Feature importances are printed using:
+
+``` python
+model.feature_importances_
+```
+
+------------------------------------------------------------------------
+
+## 11. Important dataset/model workflow issue
+
+A major part of the conversation was determining whether the
+dataset/model needed to be rebuilt after adding a new feature.
+
+Correct workflow:
+
+``` text
+Change feature_extractor.py
+        â†“
+Re-run dataset feature extraction / preprocessing
+        â†“
+Verify data/processed_features.csv contains the new feature
+        â†“
+Retrain Random Forest
+        â†“
+Save model/phishing_model.pkl
+        â†“
+Run external benign + phishing evaluation
+```
+
+The user initially attempted to read:
+
+``` text
+data/processed_dataset.csv
+```
+
+but that file does not exist.
+
+The actual processed dataset is:
+
+``` text
+data/processed_features.csv
+```
+
+This is the file used by the training script.
+
+When adding/changing features, the processed dataset must be regenerated
+from the original URL dataset before retraining. Otherwise the model
+will not actually learn the newly added feature.
+
+------------------------------------------------------------------------
+
+## 12. Current known issue: `suspicious_path_word_count`
+
+There were several debugging questions around where to add:
+
+``` python
+path_lower = path.lower()
+
+suspicious_path_word_count = sum(
+    1
+    for word in SUSPICIOUS_PATH_WORDS
+    if word in path_lower
+)
+```
+
+The important final state is:
+
+-   `extract_features()` creates `features = {}`
+-   `extract_features()` already has:
+
+``` python
+features["suspicious_path_word_count"] = count_suspicious_path_words(path, query)
+```
+
+Therefore the feature is already part of the output.
+
+The separate calculation inside:
+
+``` python
+def suspicious_path_pattern_count(path):
+```
+
+is redundant and currently unused.
+
+A future cleanup should likely simplify this so there is one clear
+implementation for suspicious path word counting.
+
+------------------------------------------------------------------------
+
+## 13. Current model performance snapshot
+
+Latest known external performance:
+
+  Test                                          Result
+  ------------------------------------- --------------
+  External benign URLs                    37/37 = 100%
+  External phishing URLs                  99/100 = 99%
+  Total external URLs shown                        137
+  Phishing missed                                    1
+  Benign false positives in this test                0
+
+However, this is a small manually curated external test set and should
+**not** be presented as a statistically validated real-world 99%
+detector.
+
+The internal train/test metrics were not included in the latest
+conversation output, so their exact values are currently unknown.
+
+------------------------------------------------------------------------
+
+## 14. Recommended immediate next steps
+
+### Step 1 --- Inspect the current training output
+
+Run the training script and save the exact:
+
+-   Accuracy
+-   Precision
+-   Recall
+-   F1
+-   Classification report
+-   Confusion matrix
+-   Feature importances
+
+Do not assume these from the external evaluation.
+
+### Step 2 --- Inspect feature importance
+
+The most important question is whether the newly added:
+
+``` text
+suspicious_path_word_count
+```
+
+is actually being used by the Random Forest.
+
+### Step 3 --- Investigate the remaining missed URL
+
+Target:
+
+``` text
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+```
+
+Do not hardcode the exact URL/domain.
+
+Consider whether a general feature can capture registration/login
+semantics across languages, such as:
+
+-   multilingual account/login/registration terms
+-   common form-action path words
+-   suspicious file/path combinations
+-   URL tokenization
+-   character n-grams
+-   domain reputation/age, if the project scope permits external lookup
+-   lexical model beyond a fixed English keyword list
+
+### Step 4 --- Investigate false-positive risk
+
+The benign test includes:
+
+``` text
+https://youtube.com
+```
+
+at:
+
+``` text
+48.0% phishing
+```
+
+and GitHub URLs around 26.6--36.5%.
+
+The detector should ideally produce much lower scores for common
+legitimate sites.
+
+### Step 5 --- Expand evaluation
+
+Create separate validation sets containing:
+
+-   legitimate common sites
+-   legitimate login pages
+-   legitimate long URLs
+-   legitimate URLs with many query parameters
+-   legitimate URLs with suspicious-looking words
+-   phishing URLs with simple/clean-looking paths
+-   multilingual phishing URLs
+-   typo-squatting URLs
+-   impersonation URLs
+-   URL-shortener cases, if supported
+
+### Step 6 --- Consider improving the model
+
+Possible next-stage approaches:
+
+1.  Keep Random Forest and improve handcrafted features.
+2.  Add character n-gram TF-IDF features.
+3.  Compare Random Forest with Logistic Regression / Linear SVM /
+    XGBoost-style models if allowed by the project.
+4.  Build a hybrid lexical + character model.
+5.  Add a calibrated probability layer if probabilities are intended to
+    be shown to users.
+
+Do not make all of these changes at once. Change one component, retrain,
+and compare against the same evaluation set.
+
+------------------------------------------------------------------------
+
+## 15. Important project design principle
+
+The project should optimize for **generalization**, not simply getting
+100/100 on a fixed external list.
+
+Avoid rules like:
+
+``` python
+if "journalnoticesgoiases.nl" in url:
+    return phishing
+```
+
+or adding exact dataset URLs as special cases.
+
+A feature should represent a pattern likely to occur in unseen phishing
+URLs.
+
+------------------------------------------------------------------------
+
+## 16. Commands already used
+
+### Check processed dataset
+
+``` powershell
+python -c "import pandas as pd; df=pd.read_csv('data/processed_features.csv'); print('Columns:'); print(df.columns.tolist()); print('\nShape:', df.shape); print('\nLabel counts:'); print(df['label'].value_counts())"
+```
+
+### Test a URL's extracted features
+
+``` powershell
+python -c "from src.feature_extractor import extract_features; u='journalnoticesgoiases.nl/vocesorte/cadastro.php'; f=extract_features(u); print('\n'.join(f'{k}: {v}' for k,v in f.items()))"
+```
+
+### Test the previously missed URL's path features
+
+``` powershell
+python -c "from src.feature_extractor import extract_features; u='www.mega-strana.com/tmp/ro/set/Paypal_Virefication/'; f=extract_features(u); print('suspicious_path_word_count:', f['suspicious_path_word_count']); print('suspicious_path_pattern_count:', f['suspicious_path_pattern_count'])"
+```
+
+### Run benign external evaluation
+
+``` powershell
+python src/evaluate_benign.py
+```
+
+### Run phishing external evaluation
+
+``` powershell
+python src/evaluate_phishing.py
+```
+
+------------------------------------------------------------------------
+
+## 17. Known uncertainty
+
+The conversation does **not** establish:
+
+-   the original raw dataset filename
+-   the exact preprocessing script used to create
+    `processed_features.csv`
+-   the exact training script filename
+-   the exact latest internal train/test metric output
+-   whether the latest external evaluation model was definitely
+    retrained after every feature modification
+-   the exact contents of `evaluate_benign.py`
+-   the exact contents of `evaluate_phishing.py`
+-   the exact original dataset source
+-   the exact dependency versions
+
+A handoff AI should ask for these files or inspect the project directory
+before making claims about them.
+
+------------------------------------------------------------------------
+
+## 18. Handoff objective
+
+Continue from the current state rather than rebuilding the project from
+scratch.
+
+The immediate objective is:
+
+> Improve the remaining phishing miss
+> (`journalnoticesgoiases.nl/vocesorte/cadastro.php`) without increasing
+> false positives on legitimate URLs, while maintaining a clean
+> reproducible feature â†’ dataset â†’ training â†’ evaluation pipeline.
+
+The next AI should first inspect the actual project files if available,
+then make the smallest justified change, regenerate
+`processed_features.csv`, retrain the model, and rerun both external
+evaluation scripts.
+
+
+========================
+HANDOFF_PROMPT.txt
+========================
+
+You are taking over an existing Python phishing-URL detection project
+from another AI assistant.
+
+Read PROJECT_STATE.md first. Treat it as the authoritative handoff
+summary of the conversation history, but verify details against the
+actual project files whenever they are available.
+
+Your role
+
+Act as a senior ML/software-engineering mentor helping continue the
+project. Do not restart the project or invent missing files.
+
+Current project
+
+Local Windows project:
+
+C:\Users\adriy\OneDrive\Documents\phishing-detector
+
+Virtual environment is active as (venv).
+
+Known structure:
+
+    data/processed_features.csv
+    model/phishing_model.pkl
+    model/confusion_matrix.png
+    src/feature_extractor.py
+    src/evaluate_benign.py
+    src/evaluate_phishing.py
+
+There may be additional files.
+
+Current dataset
+
+data/processed_features.csv
+
+Shape:
+
+(95949, 29)
+
+Labels:
+
+-   0 = legitimate: 48,046
+-   1 = phishing: 47,903
+
+There are 28 input features and one label.
+
+The feature list is documented in PROJECT_STATE.md.
+
+Current model
+
+Random Forest:
+
+    RandomForestClassifier(
+        n_estimators=200,
+        random_state=42,
+        n_jobs=-1
+    )
+
+Train/test split:
+
+    test_size=0.20
+    random_state=42
+    stratify=y
+
+Model path:
+
+model/phishing_model.pkl
+
+Current external performance
+
+Latest benign test:
+
+37/37 correct = 100%
+
+Latest phishing test:
+
+99/100 detected = 99%
+
+The remaining missed phishing URL is:
+
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+
+Its model score is:
+
+38.5% phishing
+
+A previous miss:
+
+www.mega-strana.com/tmp/ro/set/Paypal_Virefication/
+
+was improved to:
+
+96.0% phishing
+
+after the path-word handling was improved.
+
+Critical current feature issue
+
+src/feature_extractor.py currently contains:
+
+    features["suspicious_path_word_count"] = count_suspicious_path_words(path, query)
+
+so the feature is already part of the output.
+
+There is also a redundant calculation inside
+suspicious_path_pattern_count():
+
+    suspicious_path_word_count = sum(
+        1 for word in SUSPICIOUS_PATH_WORDS
+        if word in path_lower
+    )
+
+but that local variable is not returned or used.
+
+Do not confuse these two implementations.
+
+Important workflow rule
+
+Whenever feature extraction code changes:
+
+1.  Regenerate data/processed_features.csv from the original raw
+    dataset.
+2.  Verify the new column exists and has sensible values.
+3.  Retrain the Random Forest.
+4.  Save model/phishing_model.pkl.
+5.  Run: python src/evaluate_benign.py
+6.  Run: python src/evaluate_phishing.py
+7.  Compare both results with the previous baseline.
+
+Do NOT simply retrain against an old processed CSV after adding a
+feature.
+
+Main remaining problem
+
+Investigate:
+
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+
+Current extracted features are mostly ordinary:
+
+    url_length: 54
+    hostname_length: 24
+    path_length: 23
+    query_length: 0
+    num_dots: 2
+    num_hyphens: 0
+    num_slashes: 4
+    num_digits: 0
+    num_letters: 47
+    num_special_chars: 0
+    uses_https: 0
+    has_ip_address: 0
+    has_at_symbol: 0
+    has_double_slash: 0
+    domain_length: 21
+    subdomain_length: 0
+    num_subdomains: 0
+    has_subdomain: 0
+    has_valid_tld: 1
+    suspicious_word_count: 0
+    suspicious_path_pattern_count: 0
+    suspicious_path_word_count: 0
+    has_long_numeric_sequence: 0
+    has_hex_like_sequence: 0
+    has_double_extension: 0
+    digit_ratio: 0.0
+    letter_ratio: 0.8703703703703703
+    url_entropy: 4.092876280647646
+
+Do not hardcode this exact domain or URL as phishing. Seek a
+generalizable pattern.
+
+cadastro is a Portuguese word associated with registration, but this
+fact alone should not justify a rule without checking false-positive
+implications and the projectâ€™s data.
+
+Important false-positive signal
+
+The benign set currently contains some relatively high scores:
+
+-   https://youtube.com â†’ 48.0%
+-   https://github.com â†’ 36.5%
+-   https://github.com/search?q=python â†’ 31.2%
+-   https://www.google.com/search?q=cybersecurity â†’ 34.0%
+
+Although all 37 benign examples were classified as legitimate under the
+projectâ€™s decision threshold, these probabilities suggest
+calibration/generalization should be examined.
+
+How to work
+
+-   First inspect the actual files if available.
+-   Do not assume the handoff summary contains the whole codebase.
+-   Preserve the existing architecture unless a change is justified.
+-   Explain why each proposed feature/change should generalize.
+-   Prefer small controlled experiments.
+-   Keep the current external evaluation scripts as regression tests.
+-   Do not optimize only for the single missed URL.
+-   Track whether a change improves recall at the expense of benign
+    false positives.
+-   When suggesting code, identify the exact file and exact location to
+    modify.
+-   If a dataset regeneration script is needed but is missing from the
+    handoff, ask the user to show the project tree or relevant
+    preprocessing script rather than inventing its filename.
+
+First task
+
+Before changing code:
+
+1.  Inspect the project tree.
+2.  Inspect src/feature_extractor.py.
+3.  Identify the script that creates data/processed_features.csv.
+4.  Inspect the training script.
+5.  Inspect both external evaluation scripts.
+6.  Confirm the current modelâ€™s feature schema matches
+    processed_features.csv.
+7.  Then propose the smallest next experiment for the remaining missed
+    URL.
+
+Do not claim anything about files you have not seen.
+
+
+========================
+src/feature_extractor.py
+========================
+
+import re
+import math
+import ipaddress
+import tldextract
+from urllib.parse import urlparse
+
+
+SUSPICIOUS_WORDS = [
+    "login",
+    "signin",
+    "verify",
+    "verification",
+    "secure",
+    "account",
+    "update",
+    "confirm",
+    "password",
+    "credential",
+    "paypal",
+    "bank",
+    "billing",
+    "payment",
+    "wallet",
+    "auth",
+]
+
+SUSPICIOUS_PATH_PATTERNS = [
+    "/wp-content/",
+    "/wp-includes/",
+    "/plugins/",
+    "/themes/",
+    "/cgi-bin/",
+    "/upload/",
+    "/uploads/",
+]
+
+SUSPICIOUS_PATH_WORDS = [
+    "login",
+    "signin",
+    "sign-in",
+    "verify",
+    "verification",
+    "virefication",
+    "secure",
+    "account",
+    "update",
+    "confirm",
+    "password",
+    "credential",
+    "billing",
+    "payment",
+    "paypal",
+    "bank",
+]
+
+def has_ip_address(url):
+    try:
+        hostname = urlparse(url).hostname
+
+        if hostname is None:
+            return 0
+
+        ipaddress.ip_address(hostname)
+        return 1
+
+    except ValueError:
+        return 0
+
+
+def count_special_characters(url):
+    special_chars = "@?&=_%~-"
+    return sum(url.count(char) for char in special_chars)
+
+
+def count_digits(url):
+    return sum(char.isdigit() for char in url)
+
+
+def count_letters(url):
+    return sum(char.isalpha() for char in url)
+
+
+def calculate_entropy(text):
+    if not text:
+        return 0
+
+    frequency = {}
+
+    for char in text:
+        frequency[char] = frequency.get(char, 0) + 1
+
+    entropy = 0
+    length = len(text)
+
+    for count in frequency.values():
+        probability = count / length
+        entropy -= probability * math.log2(probability)
+
+    return entropy
+def has_long_numeric_sequence(url):
+    return int(bool(re.search(r"\d{6,}", url)))
+
+
+def has_hex_like_sequence(url):
+    return int(bool(re.search(r"[a-f0-9]{12,}", url.lower())))
+
+
+def has_double_extension(url):
+    return int(bool(
+        re.search(
+            r"\.(html?|php|asp|aspx|jsp|pdf|docx?|xlsx?|zip)\."
+            r"(exe|scr|php|html?|js)",
+            url.lower()
+        )
+    ))
+
+
+def count_suspicious_path_words(path, query):
+    text = (path + "?" + query).lower()
+
+    return sum(
+        text.count(word)
+        for word in SUSPICIOUS_PATH_WORDS
+    )
+
+def suspicious_path_pattern_count(path):
+    path_lower = path.lower()
+
+    count = 0
+
+    for pattern in SUSPICIOUS_PATH_PATTERNS:
+        if pattern in path_lower:
+            count += 1
+
+    return count
+
+def extract_features(url):
+    
+    
+
+    # Add scheme if user enters something like google.com
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    parsed = urlparse(url)
+
+    hostname = parsed.hostname or ""
+    path = parsed.path or ""
+    query = parsed.query or ""
+
+    extracted = tldextract.extract(url)
+
+    domain = extracted.domain
+    subdomain = extracted.subdomain
+    suffix = extracted.suffix
+
+    features = {}
+
+    # -------------------------
+    # Basic URL characteristics
+    # -------------------------
+
+    features["url_length"] = len(url)
+
+    features["hostname_length"] = len(hostname)
+
+    features["path_length"] = len(path)
+
+    features["query_length"] = len(query)
+
+    features["num_dots"] = url.count(".")
+
+    features["num_hyphens"] = url.count("-")
+
+    features["num_slashes"] = url.count("/")
+
+    features["num_digits"] = count_digits(url)
+
+    features["num_letters"] = count_letters(url)
+
+    features["num_special_chars"] = count_special_characters(url)
+
+    # -------------------------
+    # Security-related features
+    # -------------------------
+
+    features["uses_https"] = int(parsed.scheme == "https")
+
+    features["has_ip_address"] = has_ip_address(url)
+
+    features["has_at_symbol"] = int("@" in url)
+
+    features["has_double_slash"] = int("//" in parsed.path)
+
+    # -------------------------
+    # Domain characteristics
+    # -------------------------
+
+    features["domain_length"] = len(domain)
+
+    features["subdomain_length"] = len(subdomain)
+
+    features["num_subdomains"] = (
+        len(subdomain.split(".")) if subdomain else 0
+    )
+
+    features["has_subdomain"] = int(bool(subdomain))
+
+    features["has_valid_tld"] = int(bool(suffix))
+
+    # -------------------------
+    # Suspicious keywords
+    # -------------------------
+
+    url_lower = url.lower()
+
+    suspicious_word_count = 0
+
+    for word in SUSPICIOUS_WORDS:
+        if word in url_lower:
+            suspicious_word_count += 1
+
+    features["suspicious_word_count"] = suspicious_word_count
+
+    features["suspicious_path_pattern_count"] = suspicious_path_pattern_count(path)
+
+    features["suspicious_path_word_count"] = count_suspicious_path_words(path,query)
+
+    features["has_long_numeric_sequence"] = has_long_numeric_sequence(url)
+
+    features["has_hex_like_sequence"] = has_hex_like_sequence(url)
+
+    features["has_double_extension"] = has_double_extension(url)
+
+    # -------------------------
+    # Character distribution
+    # -------------------------
+
+    if len(url) > 0:
+        features["digit_ratio"] = count_digits(url) / len(url)
+        features["letter_ratio"] = count_letters(url) / len(url)
+    else:
+        features["digit_ratio"] = 0
+        features["letter_ratio"] = 0
+
+    # -------------------------
+    # Entropy
+    # -------------------------
+
+    features["url_entropy"] = calculate_entropy(url)
+
+    return features
+
+========================
+src/prepare_dataset.py
+========================
+
+import pandas as pd
+from feature_extractor import extract_features
+
+INPUT_FILE = "data/phishing_urls.csv"
+BENIGN_TRAINING_FILE = "data/benign_training_urls.txt"
+OUTPUT_FILE = "data/processed_features.csv"
+
+
+def load_original_dataset():
+    print("Loading original dataset...")
+
+    df = pd.read_csv(
+        INPUT_FILE,
+        encoding="latin-1",
+        engine="python",
+        on_bad_lines="skip"
+    )
+
+    df = df[["domain", "label"]]
+    df = df.dropna(subset=["domain", "label"])
+    df["label"] = df["label"].astype(int)
+
+    return df
+
+
+def load_benign_urls():
+    print("Loading benign training URLs...")
+
+    with open(BENIGN_TRAINING_FILE, "r", encoding="utf-8") as f:
+        urls = [line.strip() for line in f if line.strip()]
+
+    df = pd.DataFrame({
+        "domain": urls,
+        "label": 0
+    })
+
+    return df
+
+
+def extract_dataset_features(df):
+
+    feature_rows = []
+
+    total = len(df)
+
+    print(f"Extracting features from {total} URLs...")
+
+    for index, row in df.iterrows():
+
+        url = str(row["domain"])
+        label = row["label"]
+
+        try:
+            features = extract_features(url)
+            features["label"] = label
+
+            feature_rows.append(features)
+
+        except Exception as e:
+            print(f"Error processing URL at row {index}: {e}")
+
+        if (index + 1) % 5000 == 0:
+            print(f"Processed {index + 1}/{total}")
+
+    return pd.DataFrame(feature_rows)
+
+
+def main():
+
+    # Load original dataset
+    original_df = load_original_dataset()
+
+    print(f"Loaded {len(original_df)} original URLs.")
+
+    # Load additional legitimate URLs
+    benign_df = load_benign_urls()
+
+    print(f"Loaded {len(benign_df)} benign training URLs.")
+
+    # Combine datasets
+    df = pd.concat(
+        [original_df, benign_df],
+        ignore_index=True
+    )
+
+    print(f"\nCombined dataset size: {len(df)}")
+
+    print("\nCombined label distribution:")
+    print(df["label"].value_counts())
+
+    # Extract features
+    processed_df = extract_dataset_features(df)
+
+    # Save processed dataset
+    processed_df.to_csv(
+        OUTPUT_FILE,
+        index=False
+    )
+
+    print("\nFeature extraction complete!")
+
+    print("Saved processed dataset to:")
+    print(OUTPUT_FILE)
+
+    print("\nProcessed dataset shape:")
+    print(processed_df.shape)
+
+    print("\nFeatures:")
+    print(processed_df.columns.tolist())
+
+
+if __name__ == "__main__":
+    main()
+
+========================
+src/train_model.py
+========================
+
+import pandas as pd
+import joblib
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix,
+    ConfusionMatrixDisplay
+)
+
+
+INPUT_FILE = "data/processed_features.csv"
+MODEL_FILE = "model/phishing_model.pkl"
+
+
+def main():
+
+    print("Loading processed dataset...")
+
+    df = pd.read_csv(INPUT_FILE)
+
+    print(f"Dataset shape: {df.shape}")
+
+    # -----------------------------
+    # Separate features and labels
+    # -----------------------------
+
+    X = df.drop(columns=["label"])
+    y = df["label"]
+
+    print(f"Number of features: {X.shape[1]}")
+
+    # -----------------------------
+    # Train/test split
+    # -----------------------------
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.20,
+        random_state=42,
+        stratify=y
+    )
+
+    print(f"\nTraining samples: {len(X_train)}")
+    print(f"Testing samples: {len(X_test)}")
+
+    # -----------------------------
+    # Create Random Forest
+    # -----------------------------
+
+    model = RandomForestClassifier(
+        n_estimators=200,
+        random_state=42,
+        n_jobs=-1
+    )
+
+    print("\nTraining Random Forest...")
+
+    model.fit(X_train, y_train)
+
+    print("Training complete!")
+
+    # -----------------------------
+    # Predictions
+    # -----------------------------
+
+    y_pred = model.predict(X_test)
+
+    # -----------------------------
+    # Evaluation
+    # -----------------------------
+
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+
+    print("\n" + "=" * 50)
+    print("MODEL PERFORMANCE")
+    print("=" * 50)
+
+    print(f"Accuracy:  {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1 Score:  {f1:.4f}")
+
+    print("\nClassification Report:")
+
+    print(
+        classification_report(
+            y_test,
+            y_pred,
+            target_names=["Legitimate", "Phishing"]
+        )
+    )
+
+    # -----------------------------
+    # Confusion Matrix
+    # -----------------------------
+
+    cm = confusion_matrix(y_test, y_pred)
+
+    print("\nConfusion Matrix:")
+    print(cm)
+
+    display = ConfusionMatrixDisplay(
+        confusion_matrix=cm,
+        display_labels=["Legitimate", "Phishing"]
+    )
+
+    display.plot()
+
+    plt.title("Phishing Website Detector - Confusion Matrix")
+    plt.tight_layout()
+
+    plt.savefig(
+        "model/confusion_matrix.png",
+        dpi=300
+    )
+
+    plt.show()
+
+    # -----------------------------
+    # Feature Importance
+    # -----------------------------
+
+    importance = pd.DataFrame({
+        "feature": X.columns,
+        "importance": model.feature_importances_
+    })
+
+    importance = importance.sort_values(
+        by="importance",
+        ascending=False
+    )
+
+    print("\nFeature Importance:")
+    print(importance.to_string(index=False))
+
+    # -----------------------------
+    # Save model
+    # -----------------------------
+
+    joblib.dump(model, MODEL_FILE)
+
+    print("\nModel saved successfully!")
+
+    print(f"Model location: {MODEL_FILE}")
+
+
+if __name__ == "__main__":
+    main()
+
+========================
+src/predict.py
+========================
+
+import joblib
+import pandas as pd
+
+from feature_extractor import extract_features
+
+
+MODEL_FILE = "model/phishing_model.pkl"
+
+
+def predict_url(url):
+
+    # Extract the same features used during training
+    features = extract_features(url)
+
+    # Convert dictionary to DataFrame
+    feature_data = pd.DataFrame([features])
+
+    # Load trained model
+    model = joblib.load(MODEL_FILE)
+
+    # Make prediction
+    prediction = model.predict(feature_data)[0]
+
+    # Get probability
+    probabilities = model.predict_proba(feature_data)[0]
+
+    legitimate_probability = probabilities[0]
+    phishing_probability = probabilities[1]
+
+    return (
+        prediction,
+        legitimate_probability,
+        phishing_probability
+    )
+
+
+def main():
+
+    print("=" * 60)
+    print("       PHISHING WEBSITE DETECTOR")
+    print("=" * 60)
+
+    while True:
+
+        url = input("\nEnter a URL (or type 'exit' to quit): ")
+
+        if url.lower() == "exit":
+            print("Goodbye!")
+            break
+
+        if not url.strip():
+            print("Please enter a URL.")
+            continue
+
+        try:
+
+            prediction, legitimate_probability, phishing_probability = (
+                predict_url(url)
+            )
+
+            print("\n" + "-" * 60)
+
+            if prediction == 1:
+
+                print("RESULT: ðŸ”´ POTENTIAL PHISHING")
+
+                print(
+                    f"Phishing probability: "
+                    f"{phishing_probability * 100:.2f}%"
+                )
+
+            else:
+
+                print("RESULT: ðŸŸ¢ LIKELY LEGITIMATE")
+
+                print(
+                    f"Legitimate probability: "
+                    f"{legitimate_probability * 100:.2f}%"
+                )
+
+            print("-" * 60)
+
+        except Exception as e:
+
+            print(f"\nError analyzing URL: {e}")
+
+
+if __name__ == "__main__":
+    main()
+
+========================
+src/evaluate_phishing.py
+========================
+
+import joblib
+import pandas as pd
+
+from feature_extractor import extract_features
+
+
+MODEL_PATH = "model/phishing_model.pkl"
+URL_FILE = "data/external_phishing_test.txt"
+
+
+model = joblib.load(MODEL_PATH)
+
+with open(URL_FILE, "r", encoding="utf-8") as f:
+    urls = [line.strip() for line in f if line.strip()]
+
+
+correct = 0
+missed = 0
+
+print("\n" + "=" * 70)
+print("EXTERNAL PHISHING URL TEST")
+print("=" * 70)
+
+for url in urls:
+
+    features = extract_features(url)
+    X = pd.DataFrame([features])
+
+    prediction = model.predict(X)[0]
+    probability = model.predict_proba(X)[0][1]
+
+    if prediction == 1:
+        result = "PHISHING"
+        correct += 1
+    else:
+        result = "MISSED"
+        missed += 1
+
+    print(
+        f"{result:<12} "
+        f"{probability * 100:6.1f}% phishing    "
+        f"{url}"
+    )
+
+
+detection_rate = correct / len(urls) * 100
+
+print("\n" + "=" * 70)
+print(f"Correctly detected: {correct}/{len(urls)}")
+print(f"Missed:             {missed}/{len(urls)}")
+print(f"Detection rate:     {detection_rate:.1f}%")
+print("=" * 70)
+
+========================
+src/evaluate_benign.py
+========================
+
+import joblib
+import pandas as pd
+
+from feature_extractor import extract_features
+
+
+MODEL_PATH = "model/phishing_model.pkl"
+URL_FILE = "data/benign_test_urls.txt"
+
+
+model = joblib.load(MODEL_PATH)
+
+
+with open(URL_FILE, "r", encoding="utf-8") as f:
+    urls = [line.strip() for line in f if line.strip()]
+
+
+correct = 0
+
+print("\n" + "=" * 70)
+print("EXTERNAL BENIGN URL TEST")
+print("=" * 70)
+
+for url in urls:
+
+    features = extract_features(url)
+    X = pd.DataFrame([features])
+
+    prediction = model.predict(X)[0]
+    probability = model.predict_proba(X)[0][1]
+
+    if prediction == 0:
+        result = "LEGITIMATE"
+        correct += 1
+    else:
+        result = "PHISHING"
+
+    print(
+        f"{result:<12} "
+        f"{probability * 100:6.1f}% phishing    "
+        f"{url}"
+    )
+
+
+accuracy = correct / len(urls) * 100
+
+print("\n" + "=" * 70)
+print(f"Correct:  {correct}/{len(urls)}")
+print(f"Accuracy: {accuracy:.1f}%")
+print("=" * 70)
+
+========================
+src/inspect_dataset.py
+========================
+
+import pandas as pd
+
+DATASET_PATH = "data/phishing_urls.csv"
+
+df = pd.read_csv(
+    DATASET_PATH,
+    encoding="latin-1",
+    engine="python",
+    on_bad_lines="warn"
+)
+
+print("Dataset shape:")
+print(df.shape)
+
+print("\nColumn names:")
+print(df.columns.tolist())
+
+print("\nFirst 5 rows:")
+print(df.head())
+
+print("\nDataset information:")
+print(df.info())
+
+print("\nLabel distribution:")
+print(df["label"].value_counts())
+
+========================
+main.py
+========================
+
+from src.feature_extractor import extract_features
+
+
+test_urls = [
+    "https://www.google.com",
+    "https://www.amazon.in",
+    "http://192.168.1.10/login",
+    "https://secure-login-account-verification.com/verify",
+]
+
+
+for url in test_urls:
+
+    print("\n" + "=" * 60)
+    print("URL:", url)
+    print("=" * 60)
+
+    features = extract_features(url)
+
+    for feature, value in features.items():
+        print(f"{feature:25} : {value}")
+
+========================
+requirements.txt
+========================
+
+pandas
+numpy
+scikit-learn
+tldextract
+matplotlib
+
+========================
+README.md
+========================
+
+# Phishing URL Detector
+
+A Python machine-learning project for detecting phishing URLs using
+handcrafted lexical and structural URL features and a Random Forest
+classifier.
+
+## Current status
+
+**Snapshot:** 2026-08-13
+
+Latest known external evaluation:
+
+  Evaluation                                 Result
+  ------------------------- -----------------------
+  Benign URLs                  37/37 correct (100%)
+  Phishing URLs               99/100 detected (99%)
+  Remaining phishing miss                         1
+
+The remaining known miss is:
+
+``` text
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+```
+
+with a reported phishing probability of **38.5%**.
+
+A previously missed phishing URL:
+
+``` text
+www.mega-strana.com/tmp/ro/set/Paypal_Virefication/
+```
+
+was later detected at **96.0% phishing** after improving path-word
+handling.
+
+> These results are from a small external test set and should not be
+> interpreted as production-grade real-world accuracy.
+
+------------------------------------------------------------------------
+
+## Architecture
+
+``` text
+Raw URL dataset
+      â”‚
+      â–¼
+Feature extraction
+(src/feature_extractor.py)
+      â”‚
+      â–¼
+data/processed_features.csv
+      â”‚
+      â–¼
+Random Forest training
+      â”‚
+      â–¼
+model/phishing_model.pkl
+      â”‚
+      â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º evaluate_benign.py
+      â”‚
+      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º evaluate_phishing.py
+```
+
+------------------------------------------------------------------------
+
+## Dataset
+
+Current processed dataset:
+
+``` text
+data/processed_features.csv
+```
+
+Known shape:
+
+``` text
+95,949 rows Ã— 29 columns
+```
+
+Labels:
+
+``` text
+0 = Legitimate     48,046
+1 = Phishing       47,903
+```
+
+The dataset is almost perfectly balanced.
+
+The 28 input features are:
+
+``` text
+url_length
+hostname_length
+path_length
+query_length
+num_dots
+num_hyphens
+num_slashes
+num_digits
+num_letters
+num_special_chars
+uses_https
+has_ip_address
+has_at_symbol
+has_double_slash
+domain_length
+subdomain_length
+num_subdomains
+has_subdomain
+has_valid_tld
+suspicious_word_count
+suspicious_path_pattern_count
+suspicious_path_word_count
+has_long_numeric_sequence
+has_hex_like_sequence
+has_double_extension
+digit_ratio
+letter_ratio
+url_entropy
+```
+
+`label` is the target.
+
+------------------------------------------------------------------------
+
+## Feature extraction
+
+The project uses:
+
+-   URL length
+-   hostname/path/query lengths
+-   dots, hyphens, slashes
+-   digit/letter/special-character counts
+-   HTTPS usage
+-   IP-address detection
+-   `@` detection
+-   suspicious double-slash detection
+-   domain/subdomain structure
+-   TLD presence
+-   suspicious keywords
+-   suspicious path patterns
+-   suspicious path words
+-   long numeric sequences
+-   hexadecimal-like sequences
+-   double extensions
+-   digit/letter ratios
+-   URL entropy
+
+### Suspicious path handling
+
+The project has a dedicated `suspicious_path_word_count` feature.
+
+Examples of suspicious path terms currently considered include:
+
+``` text
+login
+signin
+sign-in
+verify
+verification
+virefication
+secure
+account
+update
+confirm
+password
+credential
+billing
+payment
+paypal
+bank
+```
+
+The misspelled term `virefication` was important for detecting one
+previously missed phishing URL.
+
+------------------------------------------------------------------------
+
+## Model
+
+Current model:
+
+``` python
+RandomForestClassifier(
+    n_estimators=200,
+    random_state=42,
+    n_jobs=-1
+)
+```
+
+Training uses an 80/20 stratified train/test split:
+
+``` python
+train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+```
+
+Model output:
+
+``` text
+model/phishing_model.pkl
+```
+
+The training script also reports:
+
+-   accuracy
+-   precision
+-   recall
+-   F1 score
+-   classification report
+-   confusion matrix
+-   feature importance
+
+Confusion matrix output:
+
+``` text
+model/confusion_matrix.png
+```
+
+------------------------------------------------------------------------
+
+## Running the project
+
+Activate the virtual environment first.
+
+Then run the external benign evaluation:
+
+``` powershell
+python src/evaluate_benign.py
+```
+
+Run the external phishing evaluation:
+
+``` powershell
+python src/evaluate_phishing.py
+```
+
+The exact training script filename was not captured in the handoff
+history, so inspect `src/` before assuming its name.
+
+------------------------------------------------------------------------
+
+## Feature-change workflow
+
+This is important.
+
+If `src/feature_extractor.py` changes, the existing processed CSV must
+be regenerated before retraining.
+
+Correct sequence:
+
+``` text
+Modify feature extractor
+        â†“
+Regenerate processed_features.csv
+        â†“
+Verify columns/values
+        â†“
+Retrain model
+        â†“
+Save phishing_model.pkl
+        â†“
+Run benign evaluation
+        â†“
+Run phishing evaluation
+```
+
+Otherwise the model may be trained without actually seeing the new
+feature.
+
+------------------------------------------------------------------------
+
+## Current debugging target
+
+The current remaining missed URL is:
+
+``` text
+journalnoticesgoiases.nl/vocesorte/cadastro.php
+```
+
+Extracted features:
+
+``` text
+url_length: 54
+hostname_length: 24
+path_length: 23
+query_length: 0
+num_dots: 2
+num_hyphens: 0
+num_slashes: 4
+num_digits: 0
+num_letters: 47
+num_special_chars: 0
+uses_https: 0
+has_ip_address: 0
+has_at_symbol: 0
+has_double_slash: 0
+domain_length: 21
+subdomain_length: 0
+num_subdomains: 0
+has_subdomain: 0
+has_valid_tld: 1
+suspicious_word_count: 0
+suspicious_path_pattern_count: 0
+suspicious_path_word_count: 0
+has_long_numeric_sequence: 0
+has_hex_like_sequence: 0
+has_double_extension: 0
+digit_ratio: 0.0
+letter_ratio: 0.8703703703703703
+url_entropy: 4.092876280647646
+```
+
+The URL therefore looks fairly ordinary to the current handcrafted
+feature set.
+
+The right goal is **not** to hardcode the domain. The goal is to
+identify a pattern that also helps detect unseen phishing URLs.
+
+------------------------------------------------------------------------
+
+## Current false-positive warning
+
+The benign test contains these relatively high phishing probabilities:
+
+``` text
+https://youtube.com                       48.0%
+https://github.com                        36.5%
+https://github.com/search?q=python        31.2%
+https://github.com/explore                26.6%
+https://www.google.com/search?q=cybersecurity 34.0%
+```
+
+All were still classified as legitimate under the project's decision
+threshold.
+
+This means probability quality/calibration and generalization should be
+examined before treating the probability as a trustworthy risk score.
+
+------------------------------------------------------------------------
+
+## Recommended next work
+
+1.  Inspect the actual preprocessing script.
+2.  Inspect the exact training script.
+3.  Confirm that the current `processed_features.csv` was generated
+    after the latest feature changes.
+4.  Retrain and record internal validation metrics.
+5.  Inspect Random Forest feature importances.
+6.  Investigate the remaining
+    `journalnoticesgoiases.nl/.../cadastro.php` miss.
+7.  Test any proposed feature against both phishing and benign external
+    sets.
+8.  Add more difficult benign examples and multilingual phishing
+    examples.
+9.  Avoid URL/domain-specific hardcoded rules.
+10. Consider character n-gram or token-based features if handcrafted
+    features plateau.
+
+------------------------------------------------------------------------
+
+## Handoff
+
+For the full conversation-derived state and detailed instructions for
+another AI, see:
+
+-   `PROJECT_STATE.md`
+-   `HANDOFF_PROMPT.txt`
+
