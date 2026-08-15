@@ -1,4 +1,4 @@
-# 🛡️ VANGUARD SecOps // URL Threat Analyzer
+# 🛡️ VANGUARD SecOps // URL Threat Analyzer (BACKEND)
 
 **Vanguard SecOps (Core-V2)** is an enterprise-grade phishing detection engine and threat intelligence dashboard. It bridges the gap between machine learning and live network telemetry, providing real-time analysis of suspicious URLs through a modern Security Operations Center (SOC) terminal interface.
 
@@ -20,9 +20,3 @@ The project is decoupled into a high-performance Python backend and a lightning-
 *   **ML Engine:** Scikit-Learn, Joblib (Model Compression)
 *   **Network Sockets:** Built-in Python `ssl`, `socket`, and `whois`
 *   **Deployment:** Render
-
-**Frontend (Client Dashboard)**
-*   **Framework:** React (Vite)
-*   **Styling:** Tailwind CSS v4 (Custom SOC Theme)
-*   **State Management:** React Hooks & Local Storage
-*   **Deployment:** Vercel
